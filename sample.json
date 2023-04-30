@@ -1,0 +1,23 @@
+[
+  {
+    "vault": "akv_name1",
+    "path": "akv/faber",
+    "akv_secrets": [
+      "books"
+    ]
+  },
+  {
+    "vault": "local",
+    "path": "hcvault/vault1",
+    "local_secrets": [
+      {
+        "name": "mildred",
+        "value": "mortag"
+      },
+      {
+        "name": "guy",
+        "value": "mortag"
+      }
+    ]
+  }
+]

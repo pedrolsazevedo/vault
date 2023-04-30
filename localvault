@@ -1,0 +1,398 @@
+#!/bin/bash -i
+
+function hw_sig_check {
+  hash="aHR0cHM6Ly93d3cueW91dHViZS5jb20vd2F0Y2g/dj1CRi1jSjZReVJwcw=="
+}
+
+function gum_style_defition {
+  YELLOW='\033[1;33m'
+  GREEN='\033[1;32m'
+  BLUE='\033[1;34m'
+  RESET='\033[0m'
+}
+
+function clean {
+  docker stop hc-vault
+  docker rm hc-vault
+  docker volume rm vault-config vault-logs vault-file
+}
+
+function update_bashrc {
+  local file="$HOME/.bashrc"
+
+  while [[ $# -gt 0 ]]; do
+    local key="$1"
+    local value="$2"
+
+    value="${value//\"/\\\"}"
+    value="${value//=/\=}"
+
+    if grep -q -E "$key=" "$file"; then
+      sed -i "/$key=/d" "$file"
+    fi
+
+    echo "export $key='$value'" >>"$file"
+    echo "Added $key to $file"
+
+    shift 2
+  done
+
+  source "$file"
+}
+
+function vault_login {
+  echo -e "${GREEN}🔑  Logging in to Vault...${RESET}"
+  docker exec -i hc-vault vault login $VAULT_ROOT_TOKEN
+}
+
+function vault_logout {
+  echo -e "${GREEN}🔑  Logging out from Vault...${RESET}"
+  docker exec -i hc-vault vault logout
+}
+
+function vault_seal {
+  echo -e "${GREEN}🔒  Sealing Vault...${RESET}"
+  
+  if [[ "$(docker exec -i hc-vault vault status -format=json | jq -r '.sealed')" == "false" ]]; then
+    docker exec -i hc-vault vault operator seal
+  fi
+}
+
+function vault_unseal {
+  echo -e "${GREEN}🔑  Unsealing Vault...${RESET}"
+  if [[ "$(docker exec -i hc-vault vault status -format=json | jq -r '.sealed')" == "true" ]]; then
+    docker exec -i hc-vault vault operator unseal $VAULT_UNSEAL_KEY
+  fi
+}
+
+function vault_check_and_start {
+  echo -e "${GREEN}🔍  Checking if container exists or not and starting if necessary${RESET}"
+  if [[ $(docker ps -q -f name=hc-vault) ]]; then
+    echo -e "${YELLOW}⚠️  A HashiCorp Vault container is already running.${RESET}"
+  else
+    if [[ "$(docker ps -aq -f status=exited -f name=hc-vault)" ]]; then
+      echo -e "${YELLOW}⚠️  Restarting local HashiCorp Vault container...${RESET}"
+      docker start hc-vault
+    else
+      echo -e "${YELLOW}⚠️  Starting local HashiCorp Vault container...${RESET}"
+
+      echo -e "${GREEN}🔧 Creating docker volumes (data, config, logs)${RESET}"
+      docker volume create vault-file
+      docker volume create vault-config
+      docker volume create vault-logs
+
+      echo -e "${GREEN}🏃  Starting base container${RESET}"
+      docker run -d --name hc-vault \
+        --cap-add IPC_LOCK \
+        -p 8200:8200 \
+        -e VAULT_ADDR=http://127.0.0.1:8200 \
+        -e VAULT_API_ADDR=http://127.0.0.1:8200 \
+        -e VAULT_SKIP_VERIFY=true \
+        -v ./config/vault.hcl:/hc-vault/vault.hcl \
+        -v vault-file:/vault/file \
+        -v vault-logs:/vault/logs \
+        -v vault-config:/vault/config \
+        vault server -config=/hc-vault/vault.hcl
+
+      echo -e "${GREEN}🔧  Waiting for Vault container to start...${RESET}"
+      sleep 5
+
+      echo -e "${GREEN}🔑  Run vault operation to get the Token and Unseal Key${RESET}"
+      docker exec -i hc-vault vault operator init -key-shares=1 -key-threshold=1 > /tmp/vault-init
+
+      echo -e "${GREEN}🔑  Export the Unseal Key and Token to environment${RESET}"
+      VAULT_UNSEAL_KEY="$(cat /tmp/vault-init | grep "Unseal Key 1" | awk '{print $4}')"
+      VAULT_ROOT_TOKEN=$(cat /tmp/vault-init | grep "Initial Root Token:" | awk '{print $4}')
+      VAULT_ADDR="http://127.0.0.1:8200"
+      VAULT_SKIP_VERIFY=true
+      rm /tmp/vault-init
+
+      echo -e "${GREEN}🔑  Adding the keys to ~/.bashrc ${RESET}"
+      update_bashrc VAULT_UNSEAL_KEY "$VAULT_UNSEAL_KEY" VAULT_ROOT_TOKEN "$VAULT_ROOT_TOKEN" VAULT_ADDR "$VAULT_ADDR" VAULT_SKIP_VERIFY true
+      echo "VAULT_UNSEAL_KEY "$VAULT_UNSEAL_KEY" VAULT_ROOT_TOKEN "$VAULT_ROOT_TOKEN" VAULT_ADDR "$VAULT_ADDR" VAULT_SKIP_VERIFY true"
+
+
+      vault_unseal
+      vault_login
+
+      echo -e "${GREEN}🔑  Enabling secret engine...${RESET}"
+      docker exec -i hc-vault vault secrets enable -version=2 -path=secret kv
+      docker exec -i hc-vault vault write secret/config max_versions=10
+
+      vault_seal
+
+      echo -e "${GREEN}✔️ Vault container is now running.${RESET}"
+    fi
+  fi
+}
+
+function check_json {
+  if [ $# -eq 0 ]; then
+    echo -e "${RED}Missing JSON file. 😕${RESET}"
+    exit 1
+  fi
+
+  json_file=$1
+
+  if [ ! -f "$json_file" ]; then
+    echo -e "${RED}JSON file not found: $json_file 😕${RESET}"
+    exit 1
+  fi
+}
+
+function vault_create_secret {
+  local path=$1
+  local name=$2
+  local value=$3
+
+  existing_secret=$(docker exec -i hc-vault vault kv get -format=json "secret/$path/$name" 2>/dev/null)
+  
+  if [ -n "$existing_secret" ]; then
+    existing_value=$(echo "$existing_secret" | jq -r '.data.data.value')
+    if [ "$existing_value" != "$value" ]; then
+      echo -e "${YELLOW}Updating $path/$name in vault.${RESET}"
+      docker exec -i hc-vault vault kv put "secret/$path/$name" value="$value"
+    else
+      echo -e "${GREEN}$path/$name in vault is already up-to-date.${RESET}"
+    fi
+  else
+    echo -e "${BLUE}Storing $path/$name in vault.${RESET}"
+    docker exec -i hc-vault vault kv put "secret/$path/$name" value="$value"
+  fi
+}
+
+function vault_sync_secret {
+
+  vault_check_and_start
+
+  echo "VARS: $VAULT_UNSEAL_KEY $VAULT_ROOT_TOKEN $VAULT_ADDR $VAULT_SKIP_VERIFY"
+
+  if [ $# -eq 0 ]; then
+    echo -e "${RED}Missing JSON file. Usage: ./script.sh sync <json-file> 😕${RESET}"
+    exit 1
+  fi
+
+  json_file=$1
+  
+  if [ ! -f "$json_file" ]
+  then
+    echo -e "${RED}JSON file not found: $json_file 😕${RESET}"
+    exit 1
+  fi
+
+
+  vault_login
+  vault_unseal
+
+  for row in $(jq -c '.[]' "${json_file}"); do
+    vault_name=$(echo "${row}" | jq -r '.vault')
+    path=$(echo "${row}" | jq -r '.path')
+
+    if [[ "${vault_name}" == "local" ]]; then
+      echo -e "${GREEN}Storing secrets in the local Hashicorp Vault path '${path}'... 😀${RESET}"
+      local_secrets=$(echo "${row}" | jq -r '.local_secrets | select(. != null) | select(. != "")')
+      for secret in $(echo "${local_secrets}" | jq -r '.[] | @base64'); do
+        secret_name=$(echo "${secret}" | base64 --decode | jq -r '.name')
+        secret_value=$(echo "${secret}" | base64 --decode | jq -r '.value')
+
+        if [[ "${secret_name}" == *"ARM"* ]]; then
+          secret_name=$(echo "${secret_name}" | tr '-' '_')
+        fi
+
+        echo "$path" "$secret_name" "$secret_value"
+
+        vault_create_secret "$path" "$secret_name" "$secret_value"
+      done
+    else
+      echo -e "${GREEN}Copying secrets from Azure Key Vault '${vault_name}' to local Hashicorp Vault path '${path}'... 😀${RESET}"
+
+      akv_secrets=$(echo "${row}" | jq -r '.akv_secrets | select(. != null) | select(. != "") | .[]')
+
+      az account show >/dev/null 2>&1
+      if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}Azure CLI login required. Please run 'az login' to authenticate.${RESET}"
+        exit 1
+      fi
+
+      vault_info=$(az keyvault show --name "$vault_name")
+      if [ -z "$vault_info" ]; then
+        echo -e "${YELLOW}Azure Key Vault '$vault_name' not found. Skipping...${RESET}"
+        exit 1
+      fi
+      subscription=$(echo "$vault_info" | jq -r '.id' | awk -F'/subscriptions' '{print $2}' | awk -F'/' '{print $2}')
+
+      for secret in $akv_secrets; do
+        secret_value=$(az keyvault secret show --name "${secret}" --vault-name "${vault_name}" --subscription "${subscription}" --query value -o tsv)        
+        
+        if [[ "${secret}" == *"ARM"* ]]; then
+          secret=$(echo "${secret}" | tr '-' '_')
+        fi
+
+        echo "$path" "$secret" "$secret_value"
+        vault_create_secret "$path" "$secret_name" "$secret_value"
+      done
+    fi
+
+    echo -e "${GREEN}Secrets stored successfully. 😃${RESET}"
+  done
+
+  vault_seal
+  # logout_vault
+}
+
+function akv_load_secrets() {
+  if [ $# -eq 0 ]; then
+    echo -e "${RED}Missing JSON file. 😕${RESET}"
+    exit 1
+  fi
+
+  json_file=$1
+
+  if [ ! -f "$json_file" ]; then
+    echo -e "${RED}JSON file not found: $json_file 😕${RESET}"
+    exit 1
+  fi
+
+  vault_check_and_start
+
+  source ~/.profile
+  echo "VARS: $VAULT_UNSEAL_KEY $VAULT_ROOT_TOKEN $VAULT_ADDR $VAULT_SKIP_VERIFY"
+
+  vault_login
+  vault_unseal
+
+  jq -r '.[]' "${json_file}" | while IFS=$'\t' read -r row; do
+    vault_name=$(echo "${row}" | jq -r '.vault')
+    path=$(echo "${row}" | jq -r '.path')
+
+    if [[ "${vault_name}" == "local" ]]; then
+      echo -e "${YELLOW}Skipping local vault '${vault_name}'.${RESET}"
+      continue
+    fi
+
+    echo -e "${GREEN}Reading secrets from Azure Key Vault '${vault_name}'... 😀${RESET}"
+
+    az account show >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+      echo -e "${YELLOW}Azure CLI login required. Please run 'az login' to authenticate.${RESET}"
+      exit 1
+    fi
+
+    vault_info=$(az keyvault show --name "${vault_name}")
+    if [ -z "${vault_info}" ]; then
+      echo -e "${YELLOW}Azure Key Vault '${vault_name}' not found. Skipping...${RESET}"
+      continue
+    fi
+
+    subscription=$(echo "${vault_info}" | jq -r '.id' | awk -F'/subscriptions' '{print $2}' | awk -F'/' '{print $2}')
+
+    secret_names=$(az keyvault secret list --vault-name "${vault_name}" --query "[].name" -o tsv)
+    if [ -z "${secret_names}" ]; then
+      echo -e "${YELLOW}No secrets found in Azure Key Vault '${vault_name}'. Skipping...${RESET}"
+      continue
+    fi
+
+    echo -e "${GREEN}Saving secrets to local Hashicorp Vault path 'secret/${path}'... 😀${RESET}"
+
+    for secret_name in ${secret_names}; do
+      secret_value=$(az keyvault secret show --name "${secret_name}" --vault-name "${vault_name}" --subscription "${subscription}" --query value -o tsv)
+
+      if [ -z "${secret_value}" ]; then
+        echo -e "${YELLOW}Failed to retrieve secret '${secret_name}' from Azure Key Vault '${vault_name}'. Skipping...${RESET}"
+        continue
+      fi
+
+      vault_create_secret "secret/${path}" "${secret_name}" "${secret_value}"
+
+      echo -e "${GREEN}Secret '${secret_name}' saved successfully.${RESET}"
+    done
+  done
+
+  vault_seal
+}
+
+function vault_load_secrets {
+  local path="secret/$1"
+
+  if [ -z "$path" ]; then
+    echo -e "${RED}Please provide a path to the secrets as an argument. 😕${RESET}"
+    exit 1
+  fi
+
+  vault_login
+  vault_unseal
+
+  local keys=($(docker exec -i hc-vault vault kv list -format=json "${path}" | jq -r '.[]'))
+
+  for key in "${keys[@]}"; do
+    local value=$(docker exec -i hc-vault vault kv get -format=json "${path}/${key}" | jq -r '.data.data.value')
+
+    update_bashrc ${key} ${value}
+    echo "Exported ${key}=${value}"
+  done
+
+  vault_seal
+
+  echo -e "${GREEN}Secrets loaded successfully! 😃${RESET}"
+}
+
+function help {
+  echo "Usage: $0 <function_name> <function_argument>"
+  echo
+  echo -e "${BLUE}Functions:${RESET}"
+  echo -e "  ${GREEN}vault${RESET}"
+  echo "    - Checks if a Hashicorp Vault container is running, starts it if not."
+  echo "    - Example: ./vault_script.sh vault"
+  echo
+  echo -e "  ${GREEN}sync <json_file> ${RESET}"
+  echo "    - Copies secrets from Azure Key Vault to a local Hashicorp Vault based on the provided JSON file."
+  echo "    - Example: ./vault_script.sh copy_secrets secrets.json"
+  echo
+  echo -e "  ${GREEN}load <local_vault_path> ${RESET}"
+  echo "    - Loads secrets from the specified path in the local Hashicorp Vault into environment variables."
+  echo "    - Example: ./vault_script.sh vault_load_secrets path/to/secrets"
+  echo
+  echo -e "  ${GREEN}clean <local_vault_path> ${RESET}"
+  echo "    - Cleanup all docker components."
+  echo "    - Example: ./vault_script.sh clean"
+  echo
+  echo -e "  ${GREEN}help${RESET}"
+  echo "    - Shows this help message."
+  echo "    - Example: ./vault_script.sh help"
+}
+
+if [ $# -eq 0 ]; then
+  echo "No option specified. Use help, -h or --help to display help message."
+  exit 1
+fi
+
+# Define Gum style to the script
+gum_style_defition
+
+function_name="$1"
+function_argument="$2"
+
+case "${function_name}" in
+"vault")
+  vault_check_and_start
+  ;;
+"sync")
+  vault_sync_secret "${function_argument}"
+  ;;
+"local")
+  create_local_secrets "${function_argument}"
+  ;;
+"load")
+  vault_load_secrets "${function_argument}"
+  ;;
+"clean")
+  clean "${function_argument}"
+  ;;
+"help" | "-h" | "--help")
+  help
+  ;;
+*)
+  help
+  exit 1
+  ;;
+esac

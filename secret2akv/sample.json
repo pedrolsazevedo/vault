@@ -1,0 +1,14 @@
+[
+  {
+    "vault": "akv_name",
+    "env": "sbx",
+    "prefix": "whoami",
+    "secrets": [
+      {
+        "name": "SAMPLE-TEXT",
+        "type": "plain/text",
+        "value": "SAMPLE-GUID"
+      }
+    ]
+  }  
+]

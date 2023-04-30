@@ -1,0 +1,15 @@
+[Unit]
+Description=HashiCorp Vault Container
+Requires=docker.service
+After=docker.service
+
+[Service]
+Restart=always
+ExecStart=/path/to/localvault vault
+WorkingDirectory=/path/to/localvault
+User=<username>
+Group=<groupname>
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
