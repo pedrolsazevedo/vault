@@ -11,12 +11,14 @@ function gum_style_defition {
   RESET='\033[0m'
 }
 
+# Stop and remove the HashiCorp Vault container and volumes.
 function clean {
   docker stop hc-vault
   docker rm hc-vault
   docker volume rm vault-config vault-logs vault-file
 }
 
+# Script function: Load secrets from HashiCorp Vault into environment variables
 function update_bashrc {
   local file="$HOME/.bashrc"
 
@@ -40,6 +42,22 @@ function update_bashrc {
   source "$file"
 }
 
+# Script function: Check if JSON was passed on call and if exists.
+function check_json {
+  if [ $# -eq 0 ]; then
+    echo -e "${RED}Missing JSON file. 😕${RESET}"
+    exit 1
+  fi
+
+  json_file=$1
+
+  if [ ! -f "$json_file" ]; then
+    echo -e "${RED}JSON file not found: $json_file 😕${RESET}"
+    exit 1
+  fi
+}
+
+# Vault operations functions:
 function vault_login {
   echo -e "${GREEN}🔑  Logging in to Vault...${RESET}"
   docker exec -i hc-vault vault login $VAULT_ROOT_TOKEN
@@ -65,6 +83,29 @@ function vault_unseal {
   fi
 }
 
+# Script function: Creates the secret on local Hashicorp Vault.
+function vault_create_secret {
+  local path=$1
+  local name=$2
+  local value=$3
+
+  existing_secret=$(docker exec -i hc-vault vault kv get -format=json "secret/$path/$name" 2>/dev/null)
+  
+  if [ -n "$existing_secret" ]; then
+    existing_value=$(echo "$existing_secret" | jq -r '.data.data.value')
+    if [ "$existing_value" != "$value" ]; then
+      echo -e "${YELLOW}Updating $path/$name in vault.${RESET}"
+      docker exec -i hc-vault vault kv put "secret/$path/$name" value="$value"
+    else
+      echo -e "${GREEN}$path/$name in vault is already up-to-date.${RESET}"
+    fi
+  else
+    echo -e "${BLUE}Storing $path/$name in vault.${RESET}"
+    docker exec -i hc-vault vault kv put "secret/$path/$name" value="$value"
+  fi
+}
+
+# Check and start the HashiCorp Vault container.
 function vault_check_and_start {
   echo -e "${GREEN}🔍  Checking if container exists or not and starting if necessary${RESET}"
   if [[ $(docker ps -q -f name=hc-vault) ]]; then
@@ -126,46 +167,11 @@ function vault_check_and_start {
   fi
 }
 
-function check_json {
-  if [ $# -eq 0 ]; then
-    echo -e "${RED}Missing JSON file. 😕${RESET}"
-    exit 1
-  fi
 
-  json_file=$1
-
-  if [ ! -f "$json_file" ]; then
-    echo -e "${RED}JSON file not found: $json_file 😕${RESET}"
-    exit 1
-  fi
-}
-
-function vault_create_secret {
-  local path=$1
-  local name=$2
-  local value=$3
-
-  existing_secret=$(docker exec -i hc-vault vault kv get -format=json "secret/$path/$name" 2>/dev/null)
-  
-  if [ -n "$existing_secret" ]; then
-    existing_value=$(echo "$existing_secret" | jq -r '.data.data.value')
-    if [ "$existing_value" != "$value" ]; then
-      echo -e "${YELLOW}Updating $path/$name in vault.${RESET}"
-      docker exec -i hc-vault vault kv put "secret/$path/$name" value="$value"
-    else
-      echo -e "${GREEN}$path/$name in vault is already up-to-date.${RESET}"
-    fi
-  else
-    echo -e "${BLUE}Storing $path/$name in vault.${RESET}"
-    docker exec -i hc-vault vault kv put "secret/$path/$name" value="$value"
-  fi
-}
-
+# Synchronize secrets from a Azure Keyvault or JSON file to HashiCorp Vault.
 function vault_sync_secret {
 
   vault_check_and_start
-
-  echo "VARS: $VAULT_UNSEAL_KEY $VAULT_ROOT_TOKEN $VAULT_ADDR $VAULT_SKIP_VERIFY"
 
   if [ $# -eq 0 ]; then
     echo -e "${RED}Missing JSON file. Usage: ./script.sh sync <json-file> 😕${RESET}"
@@ -179,7 +185,6 @@ function vault_sync_secret {
     echo -e "${RED}JSON file not found: $json_file 😕${RESET}"
     exit 1
   fi
-
 
   vault_login
   vault_unseal
@@ -237,10 +242,10 @@ function vault_sync_secret {
   done
 
   vault_seal
-  # logout_vault
 }
 
-function akv_load_secrets() {
+# Uses the vault name and path to read all secrets from keyvault and save to HashiCorp Vault.
+function akv_load_secrets {
   if [ $# -eq 0 ]; then
     echo -e "${RED}Missing JSON file. 😕${RESET}"
     exit 1
@@ -256,7 +261,6 @@ function akv_load_secrets() {
   vault_check_and_start
 
   source ~/.profile
-  echo "VARS: $VAULT_UNSEAL_KEY $VAULT_ROOT_TOKEN $VAULT_ADDR $VAULT_SKIP_VERIFY"
 
   vault_login
   vault_unseal
@@ -311,6 +315,7 @@ function akv_load_secrets() {
   vault_seal
 }
 
+# Load secrets from HashiCorp Vault into environment variables.
 function vault_load_secrets {
   local path="secret/$1"
 
@@ -336,29 +341,17 @@ function vault_load_secrets {
   echo -e "${GREEN}Secrets loaded successfully! 😃${RESET}"
 }
 
+# Print script help
 function help {
-  echo "Usage: $0 <function_name> <function_argument>"
-  echo
-  echo -e "${BLUE}Functions:${RESET}"
-  echo -e "  ${GREEN}vault${RESET}"
-  echo "    - Checks if a Hashicorp Vault container is running, starts it if not."
-  echo "    - Example: ./vault_script.sh vault"
-  echo
-  echo -e "  ${GREEN}sync <json_file> ${RESET}"
-  echo "    - Copies secrets from Azure Key Vault to a local Hashicorp Vault based on the provided JSON file."
-  echo "    - Example: ./vault_script.sh copy_secrets secrets.json"
-  echo
-  echo -e "  ${GREEN}load <local_vault_path> ${RESET}"
-  echo "    - Loads secrets from the specified path in the local Hashicorp Vault into environment variables."
-  echo "    - Example: ./vault_script.sh vault_load_secrets path/to/secrets"
-  echo
-  echo -e "  ${GREEN}clean <local_vault_path> ${RESET}"
-  echo "    - Cleanup all docker components."
-  echo "    - Example: ./vault_script.sh clean"
-  echo
-  echo -e "  ${GREEN}help${RESET}"
-  echo "    - Shows this help message."
-  echo "    - Example: ./vault_script.sh help"
+  echo "Usage: ./vault <command> [arguments]"
+  echo "Available commands:"
+  echo "  ${GREEN}start${RESET}                 - Check and start the HashiCorp Vault container"
+  echo "  ${GREEN}sync <json-file>${RESET}      - Synchronize secrets from a Azure Keyvault or JSON file to HashiCorp Vault"
+#  echo "  ${GREEN}local <json-file>${RESET}     - Create local secrets in HashiCorp Vault from a JSON file"
+  echo "  ${GREEN}load <path>${RESET}           - Load secrets from HashiCorp Vault into environment variables"
+  echo "  ${GREEN}akv <json-file>${RESET}       - Uses the vault name and path to read all secrets from keyvault and save to HashiCorp Vault"
+  echo "  ${GREEN}clean${RESET}                 - Stop and remove the HashiCorp Vault container"
+  echo "  ${GREEN}help, -h, --help${RESET}      - Display this help message"
 }
 
 if [ $# -eq 0 ]; then
@@ -373,20 +366,25 @@ function_name="$1"
 function_argument="$2"
 
 case "${function_name}" in
-"vault")
+"start")
   vault_check_and_start
   ;;
 "sync")
   vault_sync_secret "${function_argument}"
   ;;
-"local")
-  create_local_secrets "${function_argument}"
+
+# Should I create a different function to this?
+# "local")
+#   create_local_secrets "${function_argument}"
+#   ;;
+"akv")
+  akv_load_secrets "${function_argument}"
   ;;
 "load")
   vault_load_secrets "${function_argument}"
   ;;
 "clean")
-  clean "${function_argument}"
+  clean
   ;;
 "help" | "-h" | "--help")
   help
