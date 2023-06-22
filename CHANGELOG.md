@@ -1,3 +1,9 @@
+## 0.3.1 (2023-06-22)
+
+### Fix
+
+- **vault**: added option to pass the branch name during download for docker image
+
 ## 0.3.0 (2023-06-22)
 
 ### Feat
