@@ -88,6 +88,7 @@ check_build_docker_image() {
     local image_name=vault
     local image_tag=1.0.0
     local git_repo=https://github.com/pedrolsazevedo/vault.git
+    local git_branch=main
 
     local full_image_name="$image_name:$image_tag"
     local temp_dir="/tmp/$image_name"
@@ -97,7 +98,7 @@ check_build_docker_image() {
     else
         echo "Docker image '$full_image_name' not found. Cloning Git repository and building the image..."
         rm -rf "$temp_dir"
-        git clone --depth 1 --branch main "$git_repo" "$temp_dir" || { echo "Failed to clone Git repository."; return 1; }
+        git clone --depth 1 --branch "$git_branch" "$git_repo" "$temp_dir" || { echo "Failed to clone Git repository."; return 1; }
         cd "$temp_dir" || { echo "Failed to change directory."; return 1; }
         docker build -t "$full_image_name" . || { echo "Failed to build Docker image."; return 1; }
         cd /tmp && rm -rf "$temp_dir"
