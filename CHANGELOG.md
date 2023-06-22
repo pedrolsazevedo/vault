@@ -1,3 +1,9 @@
+## 0.3.0 (2023-06-22)
+
+### Feat
+
+- **dockerfile**: Added Dockerfile to build the image, function to the code to check if the image exists or need to create it
+
 ## 0.2.0 (2023-06-01)
 
 ### Feat
