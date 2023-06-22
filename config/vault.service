@@ -5,11 +5,10 @@ After=docker.service
 
 [Service]
 Restart=always
-ExecStart=/path/to/localvault vault
-WorkingDirectory=/path/to/localvault
-User=<username>
-Group=<groupname>
-Restart=always
+ExecStartPre=-/usr/bin/docker kill vault
+ExecStartPre=-/usr/bin/docker rm vault
+ExecStart=/usr/bin/docker run --name vault --publish 8200:8200 --env-file /path/to/env.list --volume vault-data:/vault/data hashicorp/vault:latest
+ExecStop=/usr/bin/docker stop vault
 
 [Install]
 WantedBy=multi-user.target

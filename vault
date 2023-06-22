@@ -13,8 +13,8 @@ function gum_style_defition {
 
 # Stop and remove the HashiCorp Vault container and volumes.
 function clean {
-  docker stop hc-vault
-  docker rm hc-vault
+  docker stop vault
+  docker rm vault
   docker volume rm vault-config vault-logs vault-file
 }
 
@@ -60,27 +60,48 @@ function check_json {
 # Vault operations functions:
 function vault_login {
   echo -e "${GREEN}🔑  Logging in to Vault...${RESET}"
-  docker exec -i hc-vault vault login $VAULT_ROOT_TOKEN
+  docker exec -i vault vault login $VAULT_ROOT_TOKEN
 }
 
 function vault_logout {
   echo -e "${GREEN}🔑  Logging out from Vault...${RESET}"
-  docker exec -i hc-vault vault logout
+  docker exec -i vault vault logout
 }
 
 function vault_seal {
   echo -e "${GREEN}🔒  Sealing Vault...${RESET}"
   
-  if [[ "$(docker exec -i hc-vault vault status -format=json | jq -r '.sealed')" == "false" ]]; then
-    docker exec -i hc-vault vault operator seal
+  if [[ "$(docker exec -i vault vault status -format=json | jq -r '.sealed')" == "false" ]]; then
+    docker exec -i vault vault operator seal
   fi
 }
 
 function vault_unseal {
   echo -e "${GREEN}🔑  Unsealing Vault...${RESET}"
-  if [[ "$(docker exec -i hc-vault vault status -format=json | jq -r '.sealed')" == "true" ]]; then
-    docker exec -i hc-vault vault operator unseal $VAULT_UNSEAL_KEY
+  if [[ "$(docker exec -i vault vault status -format=json | jq -r '.sealed')" == "true" ]]; then
+    docker exec -i vault vault operator unseal $VAULT_UNSEAL_KEY
   fi
+}
+
+# Check if the docker image exists or needs to be created
+check_build_docker_image() {
+    local image_name=vault
+    local image_tag=1.0.0
+    local git_repo=https://github.com/pedrolsazevedo/vault.git
+
+    local full_image_name="$image_name:$image_tag"
+    local temp_dir="/tmp/$image_name"
+
+    if docker image inspect "$full_image_name" &> /dev/null; then
+        echo "Docker image '$full_image_name' already exists."
+    else
+        echo "Docker image '$full_image_name' not found. Cloning Git repository and building the image..."
+        rm -rf "$temp_dir"
+        git clone --depth 1 --branch main "$git_repo" "$temp_dir" || { echo "Failed to clone Git repository."; return 1; }
+        cd "$temp_dir" || { echo "Failed to change directory."; return 1; }
+        docker build -t "$full_image_name" . || { echo "Failed to build Docker image."; return 1; }
+        cd /tmp && rm -rf "$temp_dir"
+    fi
 }
 
 # Script function: Creates the secret on local Hashicorp Vault.
@@ -89,33 +110,36 @@ function vault_create_secret {
   local name=$2
   local value=$3
 
-  existing_secret=$(docker exec -i hc-vault vault kv get -format=json "secret/$path/$name" 2>/dev/null)
+  existing_secret=$(docker exec -i vault vault kv get -format=json "secret/$path/$name" 2>/dev/null)
   
   if [ -n "$existing_secret" ]; then
     existing_value=$(echo "$existing_secret" | jq -r '.data.data.value')
     if [ "$existing_value" != "$value" ]; then
       echo -e "${YELLOW}Updating $path/$name in vault.${RESET}"
-      docker exec -i hc-vault vault kv put "secret/$path/$name" value="$value"
+      docker exec -i vault vault kv put "secret/$path/$name" value="$value"
     else
       echo -e "${GREEN}$path/$name in vault is already up-to-date.${RESET}"
     fi
   else
     echo -e "${BLUE}Storing $path/$name in vault.${RESET}"
-    docker exec -i hc-vault vault kv put "secret/$path/$name" value="$value"
+    docker exec -i vault vault kv put "secret/$path/$name" value="$value"
   fi
 }
 
 # Check and start the HashiCorp Vault container.
 function vault_check_and_start {
   echo -e "${GREEN}🔍  Checking if container exists or not and starting if necessary${RESET}"
-  if [[ $(docker ps -q -f name=hc-vault) ]]; then
+  if [[ $(docker ps -q -f name=vault) ]]; then
     echo -e "${YELLOW}⚠️  A HashiCorp Vault container is already running.${RESET}"
   else
-    if [[ "$(docker ps -aq -f status=exited -f name=hc-vault)" ]]; then
+    if [[ "$(docker ps -aq -f status=exited -f name=vault)" ]]; then
       echo -e "${YELLOW}⚠️  Restarting local HashiCorp Vault container...${RESET}"
-      docker start hc-vault
+      docker start vault
     else
       echo -e "${YELLOW}⚠️  Starting local HashiCorp Vault container...${RESET}"
+
+      echo -e "${GREEN}🔧 Checking if the docker image exists or need to be created.${RESET}"
+      check_build_docker_image
 
       echo -e "${GREEN}🔧 Creating docker volumes (data, config, logs)${RESET}"
       docker volume create vault-file
@@ -123,23 +147,22 @@ function vault_check_and_start {
       docker volume create vault-logs
 
       echo -e "${GREEN}🏃  Starting base container${RESET}"
-      docker run -d --name hc-vault \
+      docker run -d --name vault \
         --cap-add IPC_LOCK \
         -p 8200:8200 \
         -e VAULT_ADDR=http://127.0.0.1:8200 \
         -e VAULT_API_ADDR=http://127.0.0.1:8200 \
         -e VAULT_SKIP_VERIFY=true \
-        -v ./config/vault.hcl:/hc-vault/vault.hcl \
         -v vault-file:/vault/file \
         -v vault-logs:/vault/logs \
         -v vault-config:/vault/config \
-        vault server -config=/hc-vault/vault.hcl
+        vault:1.0.0 server -config=/hc-vault/vault.hcl
 
       echo -e "${GREEN}🔧  Waiting for Vault container to start...${RESET}"
       sleep 5
 
       echo -e "${GREEN}🔑  Run vault operation to get the Token and Unseal Key${RESET}"
-      docker exec -i hc-vault vault operator init -key-shares=1 -key-threshold=1 > /tmp/vault-init
+      docker exec -i vault vault operator init -key-shares=1 -key-threshold=1 > /tmp/vault-init
 
       echo -e "${GREEN}🔑  Export the Unseal Key and Token to environment${RESET}"
       VAULT_UNSEAL_KEY="$(cat /tmp/vault-init | grep "Unseal Key 1" | awk '{print $4}')"
@@ -157,8 +180,8 @@ function vault_check_and_start {
       vault_login
 
       echo -e "${GREEN}🔑  Enabling secret engine...${RESET}"
-      docker exec -i hc-vault vault secrets enable -version=2 -path=secret kv
-      docker exec -i hc-vault vault write secret/config max_versions=10
+      docker exec -i vault vault secrets enable -version=2 -path=secret kv
+      docker exec -i vault vault write secret/config max_versions=10
 
       vault_seal
 
@@ -166,7 +189,6 @@ function vault_check_and_start {
     fi
   fi
 }
-
 
 # Synchronize secrets from a Azure Keyvault or JSON file to HashiCorp Vault.
 function vault_sync_secret {
@@ -242,7 +264,7 @@ function vault_sync_secret {
   done
 
   vault_seal
-}
+  }
 
 # Uses the vault name and path to read all secrets from keyvault and save to HashiCorp Vault.
 function akv_load_secrets {
@@ -327,10 +349,10 @@ function vault_load_secrets {
   vault_login
   vault_unseal
 
-  local keys=($(docker exec -i hc-vault vault kv list -format=json "${path}" | jq -r '.[]'))
+  local keys=($(docker exec -i vault vault kv list -format=json "${path}" | jq -r '.[]'))
 
   for key in "${keys[@]}"; do
-    local value=$(docker exec -i hc-vault vault kv get -format=json "${path}/${key}" | jq -r '.data.data.value')
+    local value=$(docker exec -i vault vault kv get -format=json "${path}/${key}" | jq -r '.data.data.value')
 
     update_bashrc ${key} ${value}
     echo "Exported ${key}=${value}"
@@ -343,15 +365,28 @@ function vault_load_secrets {
 
 # Print script help
 function help {
-  echo "Usage: ./vault <command> [arguments]"
-  echo "Available commands:"
-  echo "  ${GREEN}start${RESET}                 - Check and start the HashiCorp Vault container"
-  echo "  ${GREEN}sync <json-file>${RESET}      - Synchronize secrets from a Azure Keyvault or JSON file to HashiCorp Vault"
-#  echo "  ${GREEN}local <json-file>${RESET}     - Create local secrets in HashiCorp Vault from a JSON file"
-  echo "  ${GREEN}load <path>${RESET}           - Load secrets from HashiCorp Vault into environment variables"
-  echo "  ${GREEN}akv <json-file>${RESET}       - Uses the vault name and path to read all secrets from keyvault and save to HashiCorp Vault"
-  echo "  ${GREEN}clean${RESET}                 - Stop and remove the HashiCorp Vault container"
-  echo "  ${GREEN}help, -h, --help${RESET}      - Display this help message"
+  echo "Usage: $0 <function_name> <function_argument>"
+  echo
+  echo -e "${BLUE}Functions:${RESET}"
+  echo -e "  ${GREEN}start${RESET}"
+  echo "    - Checks if a Hashicorp Vault container is running, starts it if not."
+  echo "    - Example: ./vault start"
+  echo
+  echo -e "  ${GREEN}sync <json_file> ${RESET}"
+  echo "    - Copies secrets from Azure Key Vault to a local Hashicorp Vault based on the provided JSON file."
+  echo "    - Example: ./vault copy_secrets secrets.json"
+  echo
+  echo -e "  ${GREEN}load <local_vault_path> ${RESET}"
+  echo "    - Loads secrets from the specified path in the local Hashicorp Vault into environment variables."
+  echo "    - Example: ./vault load_secrets path/to/secrets"
+  echo
+  echo -e "  ${GREEN}clean <local_vault_path> ${RESET}"
+  echo "    - Cleanup all docker components."
+  echo "    - Example: ./vault load_secrets path/to/secrets"
+  echo
+  echo -e "  ${GREEN}help${RESET}"
+  echo "    - Shows this help message."
+  echo "    - Example: ./vault help"
 }
 
 if [ $# -eq 0 ]; then
@@ -372,11 +407,9 @@ case "${function_name}" in
 "sync")
   vault_sync_secret "${function_argument}"
   ;;
-
-# Should I create a different function to this?
-# "local")
-#   create_local_secrets "${function_argument}"
-#   ;;
+"local")
+  create_local_secrets "${function_argument}"
+  ;;
 "akv")
   akv_load_secrets "${function_argument}"
   ;;
@@ -384,7 +417,7 @@ case "${function_name}" in
   vault_load_secrets "${function_argument}"
   ;;
 "clean")
-  clean
+  clean "${function_argument}"
   ;;
 "help" | "-h" | "--help")
   help
