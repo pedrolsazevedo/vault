@@ -38,3 +38,8 @@ vault server -dev -dev-listen-address=0.0.0.0:8200 -dev-root-token-id=giropops &
     - vault kv put secret/opa frase=FUIIII
     - vault kv get -field frase secret/opa
     - vault kv get -field value secret/giropops
+
+
+## Vault as Container
+
+- Dockerfile
