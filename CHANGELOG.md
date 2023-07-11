@@ -1,3 +1,11 @@
+## 0.4.2 (2023-07-11)
+
+### Fix
+
+- **ci**: Adjust on the dockerfile
+- **ci**: Adjust on the dockerfile
+- **ci**: Adjust on the dockerfile
+
 ## 0.4.1 (2023-07-11)
 
 ### Fix
