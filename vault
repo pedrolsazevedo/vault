@@ -157,7 +157,7 @@ function vault_check_and_start {
         -v vault-file:/vault/file \
         -v vault-logs:/vault/logs \
         -v vault-config:/vault/config \
-        vault:1.0.0 server -config=/hc-vault/vault.hcl
+        psazevedo/vault:latest server -config=/hc-vault/vault.hcl
 
       echo -e "${GREEN}🔧  Waiting for Vault container to start...${RESET}"
       sleep 5
