@@ -1,3 +1,9 @@
+## 0.4.1 (2023-07-11)
+
+### Fix
+
+- **ci**: Fixed dockerfile location.
+
 ## 0.4.0 (2023-07-11)
 
 ### Feat
