@@ -4,12 +4,6 @@ FROM vault:${VAULT_TAG} AS base
 
 COPY ./config/vault.hcl /hc-vault/vault.hc
 
-ENV VAULT_ADDR=http://127.0.0.1:8200
-ENV VAULT_API_ADDR=http://127.0.0.1:8200
-ENV VAULT_SKIP_VERIFY=true
-
-EXPOSE 8200
-
 # Build the image for amd64 architecture
 FROM base AS amd64
 RUN echo "Building for amd64 architecture"
@@ -47,3 +41,11 @@ CMD [ "cat", "/README.md" ]
 
 # Use the manifest command to create a single image that can run on multiple architectures
 FROM manifest AS final
+
+ENV VAULT_ADDR=http://127.0.0.1:8200
+ENV VAULT_API_ADDR=http://127.0.0.1:8200
+ENV VAULT_SKIP_VERIFY=true
+
+EXPOSE 8200
+
+CMD [ "vault" ]
