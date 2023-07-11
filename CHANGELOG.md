@@ -1,3 +1,10 @@
+## 0.4.3 (2023-07-11)
+
+### Fix
+
+- **oci**: Fixed copy config name on dockerfile and start command on docker-compose
+- **oci**: Fixed copy config name on dockerfile and start command on docker-compose
+
 ## 0.4.2 (2023-07-11)
 
 ### Fix
