@@ -9,6 +9,7 @@ on:
 env:
   IMAGE_NAMESPACE: "psazevedo"
   IMAGE_NAME: ${{ github.event.repository.name }}
+  DOCKERFILE_NAME: "Dockerfile"
 
 jobs:
   bump_version:
@@ -85,7 +86,7 @@ jobs:
         with:
           context: .
           push: true
-          file: Dockerfile.multi
+          file: ${{ env.DOCKERFILE_NAME }}
           platforms: linux/amd64,linux/arm64
           tags: |
             "${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ env.CZ_VERSION }}"
