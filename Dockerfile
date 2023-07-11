@@ -2,7 +2,7 @@ ARG VAULT_TAG=1.13.3
 
 FROM vault:${VAULT_TAG} AS base
 
-COPY ./config/vault.hcl /hc-vault/vault.hc
+COPY ./config/vault.hcl /hc-vault/vault.hcl
 
 # Build the image for amd64 architecture
 FROM base AS amd64
