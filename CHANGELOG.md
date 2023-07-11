@@ -1,3 +1,10 @@
+## 0.4.0 (2023-07-11)
+
+### Feat
+
+- **ci**: Added build image for multiarch
+- **ci**: Added build image for multiarch
+
 ## 0.3.1 (2023-06-22)
 
 ### Fix
